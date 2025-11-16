@@ -1,0 +1,219 @@
+clc;clear;
+global percent
+N = 10; 
+percent=0.9
+
+
+%% data_100k数据------解除下面四行注释+对data_1M和data_10M加入注释，以此运行
+A=readmatrix("user_asset_preferences_full.csv");  %原本数据是行用户列项目
+A=A';
+A=A(2:end,2:end);  %现在是行为项目，列为用户，且去掉第一行和第一列的ID
+B=readmatrix("feature_importance_reordered.csv");
+B=B(1:end,2); 
+B=B';
+step_b = 0.00008; % 设置原始步长
+
+%% 亚马逊数据
+% load amazon_data_A.mat
+% A=A';
+% A=A(2:end,2:end);%现在是行为项目，列为用户
+% load B_data_amazon.mat
+% step_b = 0.00003;
+[movie_number,use_number] = size(A); %2019个项目，4297个用户
+
+%% 迭代系数
+iteration_coef_Zi = zeros(1,use_number);
+for t = 1:use_number
+    iteration_coef_Zi(1,t)= -(t/(N*use_number))*(log(t/(N*use_number)));
+end
+%再计算迭代收益/代价----Zi从小到大
+earning_iteration_Zi = zeros(1,use_number);
+earning_iteration_Zi(1,1) = iteration_coef_Zi(1,1);
+for t =2:use_number
+    earning_iteration_Zi(1,t)=iteration_coef_Zi(1,t)-iteration_coef_Zi(1,t-1);
+end
+% 设置随机数生成器的种子，以便结果可复现
+
+
+% load B_data_138.mat
+%% 导入项目重要性数据
+% 设置随机数生成器的种子，以便结果可复现
+% load B_data_10m.mat
+tic
+e_max = max(earning_iteration_Zi);
+e_min = min(earning_iteration_Zi);
+lamda_max = max(B);
+lamda_min = min(B);
+B=(B-lamda_min)*(e_max-e_min)/(lamda_max-lamda_min)+e_min;
+[Z,min_w,number_die] = subproblem_Z_2_1_new(N,B,earning_iteration_Zi,A);
+min_w
+
+Z_value=Z'; %转置，变成2019✖1
+
+
+%% 2.1 计算 R_u
+R_u = zeros(1, use_number);  % 每个用户都有对应的 R_u
+
+
+% 排除掉小于 R_u 的部分
+X_111 = zeros(size(A));
+for t=1:use_number
+    indi_RO = A(:,t)>=R_u(t);
+    X_111(indi_RO,t) = 1;
+end
+indices_R0 = X_111==0;  %记录要被剔除的索引
+bbb=sum(X_111,1);
+min(bbb)
+
+%% 2.1拉格朗日松弛参数
+lamda = ones(movie_number, 1); % 注意lamda取负数
+%%1. 基本设置
+
+unchanged_count = 0; % 设置迭代不改变次数
+max_unchanged_count = 50; % 设置上界最大不改变次数
+iterationCount = 0; % 记录总迭代次数
+% 初始化收敛曲线和累计时间
+Convergence_curve = [];
+Cumulative_time = []; % 累计时间数组
+% 总推荐数
+recom_number = N * use_number;
+
+
+
+%% 2.2 先计算一个解
+% (1) 求解子问题
+[x_result_SP,ubd_value_SP] = solve_subproblem_new_Ru(A,lamda,N,indices_R0,Z_value);
+sol_value_max = ubd_value_SP; % 储存最优值
+x_result_max = x_result_SP;   % 储存最优解
+
+
+
+%% 3. 循环迭代
+lbd_fix = recom_number *0.2;
+
+% 启动累计时间计时器
+total_tic = tic; % 开始总计时
+
+% while iterationCount < 800
+while  iterationCount < 400
+    % 记录当前迭代的开始时间
+    iter_tic = tic;
+
+    % 计算上界和下界
+    ubd = ubd_value_SP; % 上界--以松弛问题的解作为上界，循环迭代至最小上界
+    ubd_old = ubd;
+    % 3.1.2 计算次梯度和步长
+    s = Z_value - sum(x_result_SP, 2); % 计算次梯度:用的是违背松弛的两个结果
+    s_absolute = norm(s, "fro"); % 计算次梯度 s 的范数
+    chaer = ubd - lbd_fix;
+    step = step_b * chaer; % 计算步长
+
+    % 3.1.3 更新乘子--乘子恒 ≤ 0
+    lamda = lamda - (step * s) / s_absolute; % 乘子迭代
+
+    %% 3.2 循环计算
+    [x_result_SP,ubd_value_SP] = solve_subproblem_new_Ru(A,lamda,N,indices_R0,Z_value);
+    ubd_new = ubd_value_SP;  % 统计每次松弛问题求解出的上界
+    iterationCount = iterationCount + 1; % 统计迭代次数
+
+    %% 3.3 设置迭代停止准则———上界不更新次数
+    % 判断是否是更小（更优）的上界
+    if ubd_new < sol_value_max % 是更好的上界
+        sol_value_max = ubd_new; % 最优上界更新
+        x_result_max = x_result_SP; % 最优解更新
+        unchanged_count = 0; % 连续找不到更优的上界次数重置为0
+    else
+        unchanged_count = unchanged_count + 1; 
+        if iterationCount>10
+            step_b = step_b / 2;  
+        end
+    end
+
+    % 记录当前最优上界到收敛曲线
+    Convergence_curve(iterationCount) = sol_value_max;
+
+    % 记录累计时间
+    Cumulative_time(iterationCount) = toc(total_tic); % 记录从开始到当前迭代的累计时间
+
+    % 显示迭代信息
+    disp(['Iteration ' num2str(iterationCount) ': Best Upper Bound = ' num2str(sol_value_max) ', Time = ' num2str(Cumulative_time(iterationCount)) ' seconds']);
+
+    
+
+    % 检查是否达到最大不改变次数
+    if unchanged_count >= max_unchanged_count
+        disp(['停止迭代，连续 ' num2str(unchanged_count) ' 次未达到改进阈值。']);
+        break;
+    end
+
+    % 计算距离并检查是否满足停止条件
+    distance = abs(ubd_old - ubd_new);
+%     if iterationCount>=40
+        if distance < 0.1
+            disp(['停止迭代，当前距离 ' num2str(distance) ' 小于阈值 0.01。']);
+            break;
+        end
+%     r_i=zeros(1,movie_number);
+% for ttt=1:movie_number
+%     if sum(x_result_max(ttt,:))>Z_value(ttt)
+%         r_i(ttt)=0;
+%     else
+%         r_i(ttt)=Z_value(ttt)-sum(x_result_max(ttt,:));
+%     end
+% end
+% max_value=sum(sum( A .* x_result_max ) )-2*sum(r_i);
+%     result_8_two_suanfa(iterationCount,tttt)=sol_value_max;%模型2最小上界迭代收敛图
+%     result_9_two_mubiao(iterationCount,tttt)=max_value;
+
+end
+
+
+%% 多样性评估--熵值多样性
+div = sum(x_result_max, 2);
+Entropy_diversity = 0;
+for movie = 1:movie_number
+    if div(movie) == 0
+        continue; % 跳过div为0的情况
+    else
+        Entropy_diversity = (div(movie) / recom_number) * log(div(movie) / recom_number) + Entropy_diversity;
+    end
+end
+Entropy_diversity = -Entropy_diversity;
+
+%% 准确度
+accury_recommand = sum(sum(A .* x_result_max)) / recom_number;
+x_geshu = sum(sum(x_result_max));
+scores_sum = sum(sum(A .* x_result_max));
+scores_avg = scores_sum / x_geshu;
+%% 最优值
+r_i=zeros(1,movie_number);
+for ttt=1:movie_number
+    if sum(x_result_max(ttt,:))>Z_value(ttt)
+        r_i(ttt)=0;
+    else
+        r_i(ttt)=Z_value(ttt)-sum(x_result_max(ttt,:));
+    end
+end
+max_value=sum(sum( A .* x_result_max ) )-1*sum(r_i)
+%% 项目重要性
+item_importence=sum(div.*B');
+
+
+disp(['最优值: ', num2str(max_value)]);
+disp(['分布多样性: ', num2str(Entropy_diversity)]);
+disp(['准确度: ', num2str(scores_avg)]);
+disp(['最优上界: ', num2str(sol_value_max)]);
+disp(['项目重要性: ', num2str(item_importence)]);
+disp(['算法1迭代次数: ', num2str(number_die)]);
+toc
+% 指定要保存的文件名
+x_result_max=x_result_max';
+aaaa=sum(x_result_max,1);
+bbbb=sum(x_result_max,1);
+filename = 'recommend_result.csv';
+
+% 使用 writematrix 函数将矩阵保存为 CSV 文件
+writematrix(x_result_max, filename);
+
+% 显示保存成功的信息
+fprintf('矩阵已成功保存到文件: %s\n', filename);
