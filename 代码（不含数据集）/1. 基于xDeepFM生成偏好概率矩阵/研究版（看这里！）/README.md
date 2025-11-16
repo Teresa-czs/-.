@@ -7,10 +7,11 @@
 本项目为 **FAR-Trans** 模型的研究版，用于用户与资产偏好预测与矩阵导出。
 
 ## 数据说明
-- 使用的数据文件：
-  - `customer_information.csv` — 客户基础信息  
-  - `assets_latest.csv` — 最新资产信息  
-  - `customers_latest.csv` — 最新客户快照  
+
+数据所在文件夹：/workspace/FAR-Trans/FAR-Trans//
+请在该文件夹中放置训练与验证所需的所有数据文件（客户信息、资产信息、映射表等）。
+代码会自动从该目录加载并构建所需的 FILES 字典。
+
 - 输出文件：
   - `user_asset_preferences_full.csv` — 全量用户×资产偏好矩阵  
   - 模型权重：`xdeepfm_best.pt`
